@@ -4,8 +4,8 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import info.nightscout.androidaps.MainApp
-import info.nightscout.androidaps.R
+import dagger.android.HasAndroidInjector
+import info.nightscout.androidaps.databinding.AutomationDialogEditTriggerBinding
 import info.nightscout.androidaps.dialogs.DialogFragmentWithDate
 import info.nightscout.androidaps.plugins.bus.RxBusWrapper
 import info.nightscout.androidaps.plugins.general.automation.events.EventAutomationUpdateTrigger
@@ -17,30 +17,38 @@ import info.nightscout.androidaps.plugins.general.automation.triggers.TriggerCon
 import info.nightscout.androidaps.plugins.general.automation.triggers.TriggerDummy
 import info.nightscout.androidaps.utils.FabricPrivacy
 import info.nightscout.androidaps.utils.extensions.plusAssign
-import io.reactivex.android.schedulers.AndroidSchedulers
+import info.nightscout.androidaps.utils.rx.AapsSchedulers
 import io.reactivex.disposables.CompositeDisposable
-import kotlinx.android.synthetic.main.automation_dialog_edit_trigger.*
 import org.json.JSONObject
 import javax.inject.Inject
 
 class EditTriggerDialog : DialogFragmentWithDate() {
+
+    @Inject lateinit var aapsSchedulers: AapsSchedulers
     @Inject lateinit var rxBus: RxBusWrapper
-    @Inject lateinit var mainApp: MainApp
+    @Inject lateinit var injector: HasAndroidInjector
     @Inject lateinit var fabricPrivacy: FabricPrivacy
 
     private var disposable: CompositeDisposable = CompositeDisposable()
 
     private var triggers: Trigger? = null
 
+    private var _binding: AutomationDialogEditTriggerBinding? = null
+
+    // This property is only valid between onCreateView and
+    // onDestroyView.
+    private val binding get() = _binding!!
+
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?,
-                              savedInstanceState: Bundle?): View? {
+                              savedInstanceState: Bundle?): View {
         // load data from bundle
         (savedInstanceState ?: arguments)?.let { bundle ->
-            bundle.getString("trigger")?.let { triggers = TriggerDummy(mainApp).instantiate(JSONObject(it)) }
+            bundle.getString("trigger")?.let { triggers = TriggerDummy(injector).instantiate(JSONObject(it)) }
         }
 
         onCreateViewGeneral()
-        return inflater.inflate(R.layout.automation_dialog_edit_trigger, container, false)
+        _binding = AutomationDialogEditTriggerBinding.inflate(inflater, container, false)
+        return binding.root
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -48,36 +56,37 @@ class EditTriggerDialog : DialogFragmentWithDate() {
 
         disposable += rxBus
             .toObservable(EventTriggerChanged::class.java)
-            .observeOn(AndroidSchedulers.mainThread())
+            .observeOn(aapsSchedulers.main)
             .subscribe({
-                automation_layoutTrigger.removeAllViews()
-                triggers?.generateDialog(automation_layoutTrigger)
-            }, { fabricPrivacy.logException(it) })
+                binding.layoutTrigger.removeAllViews()
+                triggers?.generateDialog(binding.layoutTrigger)
+            }, fabricPrivacy::logException)
         disposable += rxBus
             .toObservable(EventTriggerRemove::class.java)
-            .observeOn(AndroidSchedulers.mainThread())
+            .observeOn(aapsSchedulers.main)
             .subscribe({
                 findParent(triggers, it.trigger)?.list?.remove(it.trigger)
-                automation_layoutTrigger.removeAllViews()
-                triggers?.generateDialog(automation_layoutTrigger)
-            }, { fabricPrivacy.logException(it) })
+                binding.layoutTrigger.removeAllViews()
+                triggers?.generateDialog(binding.layoutTrigger)
+            }, fabricPrivacy::logException)
 
         disposable += rxBus
             .toObservable(EventTriggerClone::class.java)
-            .observeOn(AndroidSchedulers.mainThread())
+            .observeOn(aapsSchedulers.main)
             .subscribe({
                 findParent(triggers, it.trigger)?.list?.add(it.trigger.duplicate())
-                automation_layoutTrigger.removeAllViews()
-                triggers?.generateDialog(automation_layoutTrigger)
-            }, { fabricPrivacy.logException(it) })
+                binding.layoutTrigger.removeAllViews()
+                triggers?.generateDialog(binding.layoutTrigger)
+            }, fabricPrivacy::logException)
 
         // display root trigger
-        triggers?.generateDialog(automation_layoutTrigger)
+        triggers?.generateDialog(binding.layoutTrigger)
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
         disposable.clear()
+        _binding = null
     }
 
     override fun submit(): Boolean {

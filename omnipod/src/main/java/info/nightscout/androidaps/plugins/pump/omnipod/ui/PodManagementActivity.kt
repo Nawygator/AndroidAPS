@@ -1,37 +1,40 @@
 package info.nightscout.androidaps.plugins.pump.omnipod.ui
 
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.view.View
-import android.widget.LinearLayout
-import androidx.fragment.app.FragmentStatePagerAdapter
-import com.atech.android.library.wizardpager.WizardPagerActivity
-import com.atech.android.library.wizardpager.WizardPagerContext
-import com.atech.android.library.wizardpager.data.WizardPagerSettings
-import com.atech.android.library.wizardpager.defs.WizardStepsWayType
 import dagger.android.HasAndroidInjector
+import info.nightscout.androidaps.activities.ErrorHelperActivity
 import info.nightscout.androidaps.activities.NoSplashAppCompatActivity
 import info.nightscout.androidaps.interfaces.CommandQueueProvider
 import info.nightscout.androidaps.plugins.bus.RxBusWrapper
 import info.nightscout.androidaps.plugins.pump.common.events.EventRileyLinkDeviceStatusChange
+import info.nightscout.androidaps.plugins.pump.common.hw.rileylink.dialog.RileyLinkStatusActivity
 import info.nightscout.androidaps.plugins.pump.common.hw.rileylink.service.RileyLinkServiceData
+import info.nightscout.androidaps.plugins.pump.common.hw.rileylink.service.tasks.ResetRileyLinkConfigurationTask
+import info.nightscout.androidaps.plugins.pump.common.hw.rileylink.service.tasks.ServiceTaskExecutor
+import info.nightscout.androidaps.plugins.pump.omnipod.OmnipodPumpPlugin
 import info.nightscout.androidaps.plugins.pump.omnipod.R
-import info.nightscout.androidaps.plugins.pump.omnipod.driver.definition.PodProgressStatus
+import info.nightscout.androidaps.plugins.pump.omnipod.databinding.OmnipodPodManagementBinding
+import info.nightscout.androidaps.plugins.pump.omnipod.driver.definition.ActivationProgress
+import info.nightscout.androidaps.plugins.pump.omnipod.driver.definition.BeepConfigType
 import info.nightscout.androidaps.plugins.pump.omnipod.driver.manager.PodStateManager
 import info.nightscout.androidaps.plugins.pump.omnipod.event.EventOmnipodPumpValuesChanged
 import info.nightscout.androidaps.plugins.pump.omnipod.manager.AapsOmnipodManager
-import info.nightscout.androidaps.plugins.pump.omnipod.ui.wizard.defs.PodActionType
-import info.nightscout.androidaps.plugins.pump.omnipod.ui.wizard.model.FullInitPodWizardModel
-import info.nightscout.androidaps.plugins.pump.omnipod.ui.wizard.model.RemovePodWizardModel
-import info.nightscout.androidaps.plugins.pump.omnipod.ui.wizard.model.ShortInitPodWizardModel
-import info.nightscout.androidaps.plugins.pump.omnipod.ui.wizard.pages.InitPodRefreshAction
+import info.nightscout.androidaps.plugins.pump.omnipod.queue.command.CommandPlayTestBeep
+import info.nightscout.androidaps.plugins.pump.omnipod.queue.command.CommandReadPulseLog
+import info.nightscout.androidaps.plugins.pump.omnipod.ui.wizard.activation.PodActivationWizardActivity
+import info.nightscout.androidaps.plugins.pump.omnipod.ui.wizard.deactivation.PodDeactivationWizardActivity
+import info.nightscout.androidaps.queue.Callback
+import info.nightscout.androidaps.queue.events.EventQueueChanged
 import info.nightscout.androidaps.utils.FabricPrivacy
 import info.nightscout.androidaps.utils.alertDialogs.OKDialog
 import info.nightscout.androidaps.utils.extensions.plusAssign
-import info.nightscout.androidaps.utils.resources.ResourceHelper
+import info.nightscout.androidaps.utils.extensions.toVisibility
+import info.nightscout.androidaps.utils.rx.AapsSchedulers
+import info.nightscout.androidaps.utils.ui.UIRunnable
 import io.reactivex.android.schedulers.AndroidSchedulers
 import io.reactivex.disposables.CompositeDisposable
-import kotlinx.android.synthetic.main.omnipod_pod_mgmt.*
 import javax.inject.Inject
 
 /**
@@ -40,34 +43,82 @@ import javax.inject.Inject
 class PodManagementActivity : NoSplashAppCompatActivity() {
 
     @Inject lateinit var rxBus: RxBusWrapper
-    @Inject lateinit var resourceHelper: ResourceHelper
     @Inject lateinit var fabricPrivacy: FabricPrivacy
     @Inject lateinit var commandQueue: CommandQueueProvider
     @Inject lateinit var podStateManager: PodStateManager
     @Inject lateinit var injector: HasAndroidInjector
     @Inject lateinit var rileyLinkServiceData: RileyLinkServiceData
     @Inject lateinit var aapsOmnipodManager: AapsOmnipodManager
+    @Inject lateinit var context: Context
+    @Inject lateinit var omnipodPumpPlugin: OmnipodPumpPlugin
+    @Inject lateinit var serviceTaskExecutor: ServiceTaskExecutor
+    @Inject lateinit var aapsSchedulers: AapsSchedulers
 
     private var disposables: CompositeDisposable = CompositeDisposable()
 
+    private lateinit var binding: OmnipodPodManagementBinding
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.omnipod_pod_mgmt)
+        binding = OmnipodPodManagementBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
-        initpod_init_pod.setOnClickListener {
-            initPodAction()
+        binding.buttonActivatePod.setOnClickListener {
+            startActivity(Intent(this, PodActivationWizardActivity::class.java))
         }
 
-        initpod_remove_pod.setOnClickListener {
-            deactivatePodAction()
+        binding.buttonDeactivatePod.setOnClickListener {
+            startActivity(Intent(this, PodDeactivationWizardActivity::class.java))
         }
 
-        initpod_reset_pod.setOnClickListener {
-            discardPodAction()
+        binding.buttonDiscardPod.setOnClickListener {
+            OKDialog.showConfirmation(this,
+                resourceHelper.gs(R.string.omnipod_pod_management_discard_pod_confirmation), Thread {
+                aapsOmnipodManager.discardPodState()
+            })
         }
 
-        initpod_pod_history.setOnClickListener {
-            showPodHistory()
+        binding.buttonRileylinkStats.setOnClickListener {
+            if (omnipodPumpPlugin.rileyLinkService?.verifyConfiguration() == true) {
+                startActivity(Intent(context, RileyLinkStatusActivity::class.java))
+            } else {
+                displayNotConfiguredDialog()
+            }
+        }
+
+        binding.buttonResetRileylinkConfig.setOnClickListener {
+            // TODO improvement: properly disable button until task is finished
+            serviceTaskExecutor.startTask(ResetRileyLinkConfigurationTask(injector))
+        }
+
+        binding.buttonPlayTestBeep.setOnClickListener {
+            binding.buttonPlayTestBeep.isEnabled = false
+            binding.buttonPlayTestBeep.setText(R.string.omnipod_pod_management_button_playing_test_beep)
+
+            commandQueue.customCommand(CommandPlayTestBeep(BeepConfigType.BEEEP), object : Callback() {
+                override fun run() {
+                    if (!result.success) {
+                        displayErrorDialog(resourceHelper.gs(R.string.omnipod_warning), resourceHelper.gs(R.string.omnipod_two_strings_concatenated_by_colon, resourceHelper.gs(R.string.omnipod_error_failed_to_play_test_beep), result.comment), false)
+                    }
+                }
+            })
+        }
+
+        binding.buttonPulseLog.setOnClickListener {
+            binding.buttonPulseLog.isEnabled = false
+            binding.buttonPulseLog.setText(R.string.omnipod_pod_management_button_reading_pulse_log)
+
+            commandQueue.customCommand(CommandReadPulseLog(), object : Callback() {
+                override fun run() {
+                    if (!result.success) {
+                        displayErrorDialog(resourceHelper.gs(R.string.omnipod_warning), resourceHelper.gs(R.string.omnipod_two_strings_concatenated_by_colon, resourceHelper.gs(R.string.omnipod_error_failed_to_read_pulse_log), result.comment), false)
+                    }
+                }
+            })
+        }
+
+        binding.buttonPodHistory.setOnClickListener {
+            startActivity(Intent(this, PodHistoryActivity::class.java))
         }
     }
 
@@ -75,12 +126,16 @@ class PodManagementActivity : NoSplashAppCompatActivity() {
         super.onResume()
         disposables += rxBus
             .toObservable(EventRileyLinkDeviceStatusChange::class.java)
-            .observeOn(AndroidSchedulers.mainThread())
-            .subscribe({ refreshButtons() }, { fabricPrivacy.logException(it) })
+            .observeOn(aapsSchedulers.main)
+            .subscribe({ refreshButtons() }, fabricPrivacy::logException)
         disposables += rxBus
             .toObservable(EventOmnipodPumpValuesChanged::class.java)
-            .observeOn(AndroidSchedulers.mainThread())
-            .subscribe({ refreshButtons() }, { fabricPrivacy.logException(it) })
+            .observeOn(aapsSchedulers.main)
+            .subscribe({ refreshButtons() }, fabricPrivacy::logException)
+        disposables += rxBus
+            .toObservable(EventQueueChanged::class.java)
+            .observeOn(aapsSchedulers.main)
+            .subscribe({ refreshButtons() }, fabricPrivacy::logException)
 
         refreshButtons()
     }
@@ -90,87 +145,86 @@ class PodManagementActivity : NoSplashAppCompatActivity() {
         disposables.clear()
     }
 
-    private fun initPodAction() {
-
-        val pagerSettings = WizardPagerSettings()
-        var refreshAction = InitPodRefreshAction(injector, PodActionType.INIT_POD)
-
-        pagerSettings.setWizardStepsWayType(WizardStepsWayType.CancelNext)
-        pagerSettings.setFinishStringResourceId(R.string.close)
-        pagerSettings.setFinishButtonBackground(R.drawable.finish_background)
-        pagerSettings.setNextButtonBackground(R.drawable.selectable_item_background)
-        pagerSettings.setBackStringResourceId(R.string.cancel)
-        pagerSettings.cancelAction = refreshAction
-        pagerSettings.finishAction = refreshAction
-        pagerSettings.pagerAdapterBehavior = FragmentStatePagerAdapter.BEHAVIOR_RESUME_ONLY_CURRENT_FRAGMENT
-
-        val wizardPagerContext = WizardPagerContext.getInstance()
-
-        wizardPagerContext.clearContext()
-        wizardPagerContext.pagerSettings = pagerSettings
-        val isFullInit = !podStateManager.isPodInitialized || podStateManager.podProgressStatus.isBefore(PodProgressStatus.PRIMING_COMPLETED)
-        if (isFullInit) {
-            wizardPagerContext.wizardModel = FullInitPodWizardModel(applicationContext)
-        } else {
-            wizardPagerContext.wizardModel = ShortInitPodWizardModel(applicationContext)
-        }
-
-        val myIntent = Intent(this@PodManagementActivity, WizardPagerActivity::class.java)
-        this@PodManagementActivity.startActivity(myIntent)
-    }
-
-    private fun deactivatePodAction() {
-        val pagerSettings = WizardPagerSettings()
-        var refreshAction = InitPodRefreshAction(injector, PodActionType.DEACTIVATE_POD)
-
-        pagerSettings.setWizardStepsWayType(WizardStepsWayType.CancelNext)
-        pagerSettings.setFinishStringResourceId(R.string.close)
-        pagerSettings.setFinishButtonBackground(R.drawable.finish_background)
-        pagerSettings.setNextButtonBackground(R.drawable.selectable_item_background)
-        pagerSettings.setBackStringResourceId(R.string.cancel)
-        pagerSettings.cancelAction = refreshAction
-        pagerSettings.finishAction = refreshAction
-        pagerSettings.pagerAdapterBehavior = FragmentStatePagerAdapter.BEHAVIOR_RESUME_ONLY_CURRENT_FRAGMENT
-
-        val wizardPagerContext = WizardPagerContext.getInstance();
-
-        wizardPagerContext.clearContext()
-        wizardPagerContext.pagerSettings = pagerSettings
-        wizardPagerContext.wizardModel = RemovePodWizardModel(applicationContext)
-
-        val myIntent = Intent(this@PodManagementActivity, WizardPagerActivity::class.java)
-        this@PodManagementActivity.startActivity(myIntent)
-
-    }
-
-    private fun discardPodAction() {
-        OKDialog.showConfirmation(this,
-            resourceHelper.gs(R.string.omnipod_cmd_discard_pod_desc), Thread {
-            aapsOmnipodManager.discardPodState()
-            rxBus.send(EventOmnipodPumpValuesChanged())
-        })
-    }
-
-    private fun showPodHistory() {
-        startActivity(Intent(applicationContext, PodHistoryActivity::class.java))
-    }
-
     private fun refreshButtons() {
-        initpod_init_pod.isEnabled = !podStateManager.isPodActivationCompleted
-        initpod_remove_pod.isEnabled = podStateManager.isPodInitialized
-        initpod_reset_pod.isEnabled = podStateManager.hasPodState()
+        // Only show the discard button to reset a cached Pod address before the Pod has actually been initialized
+        // Otherwise, users should use the Deactivate Pod Wizard. In case proper deactivation fails,
+        // they will get an option to discard the Pod state there
+        val discardButtonEnabled = podStateManager.hasPodState() && !podStateManager.isPodInitialized
+        binding.buttonDiscardPod.visibility = discardButtonEnabled.toVisibility()
 
-        val waitingForRlView = findViewById<LinearLayout>(R.id.initpod_waiting_for_rl_layout)
+        val pulseLogButtonEnabled = aapsOmnipodManager.isPulseLogButtonEnabled
+        binding.buttonPulseLog.visibility = pulseLogButtonEnabled.toVisibility()
+
+        binding.buttonRileylinkStats.visibility = aapsOmnipodManager.isRileylinkStatsButtonEnabled.toVisibility()
+        binding.waitingForRlLayout.visibility = (!rileyLinkServiceData.rileyLinkServiceState.isReady).toVisibility()
 
         if (rileyLinkServiceData.rileyLinkServiceState.isReady) {
-            waitingForRlView.visibility = View.GONE
+            binding.buttonActivatePod.isEnabled = !podStateManager.isPodActivationCompleted
+            binding.buttonDeactivatePod.isEnabled = podStateManager.activationProgress.isAtLeast(ActivationProgress.PAIRING_COMPLETED)
+
+            if (podStateManager.isPodInitialized && podStateManager.activationProgress.isAtLeast(ActivationProgress.PAIRING_COMPLETED)) {
+                if (commandQueue.isCustomCommandInQueue(CommandPlayTestBeep::class.java)) {
+                    binding.buttonPlayTestBeep.isEnabled = false
+                    binding.buttonPlayTestBeep.setText(R.string.omnipod_pod_management_button_playing_test_beep)
+                } else {
+                    binding.buttonPlayTestBeep.isEnabled = true
+                    binding.buttonPlayTestBeep.setText(R.string.omnipod_pod_management_button_play_test_beep)
+                }
+            } else {
+                binding.buttonPlayTestBeep.isEnabled = false
+                binding.buttonPlayTestBeep.setText(R.string.omnipod_pod_management_button_play_test_beep)
+            }
+
+            if (discardButtonEnabled) {
+                binding.buttonDiscardPod.isEnabled = true
+            }
+            if (pulseLogButtonEnabled) {
+                if (podStateManager.isPodActivationCompleted) {
+                    if (commandQueue.isCustomCommandInQueue(CommandReadPulseLog::class.java)) {
+                        binding.buttonPulseLog.isEnabled = false
+                        binding.buttonPulseLog.setText(R.string.omnipod_pod_management_button_reading_pulse_log)
+                    } else {
+                        binding.buttonPulseLog.isEnabled = true
+                        binding.buttonPulseLog.setText(R.string.omnipod_pod_management_button_read_pulse_log)
+                    }
+                } else {
+                    binding.buttonPulseLog.isEnabled = false
+                    binding.buttonPulseLog.setText(R.string.omnipod_pod_management_button_read_pulse_log)
+                }
+            }
         } else {
-            // if rileylink is not running we disable all operations that require a RL connection
-            waitingForRlView.visibility = View.VISIBLE
-            initpod_init_pod.isEnabled = false
-            initpod_remove_pod.isEnabled = false
-            initpod_reset_pod.isEnabled = false
+            binding.buttonPlayTestBeep.setText(R.string.omnipod_pod_management_button_play_test_beep)
+            binding.buttonActivatePod.isEnabled = false
+            binding.buttonDeactivatePod.isEnabled = false
+            binding.buttonPlayTestBeep.isEnabled = false
+
+            if (discardButtonEnabled) {
+                binding.buttonDiscardPod.isEnabled = false
+            }
+            if (pulseLogButtonEnabled) {
+                binding.buttonPulseLog.isEnabled = false
+                binding.buttonPulseLog.setText(R.string.omnipod_pod_management_button_read_pulse_log)
+            }
         }
     }
 
+    private fun displayErrorDialog(title: String, message: String, @Suppress("SameParameterValue") withSound: Boolean) {
+        context.let {
+            val i = Intent(it, ErrorHelperActivity::class.java)
+            i.putExtra("soundid", if (withSound) R.raw.boluserror else 0)
+            i.putExtra("status", message)
+            i.putExtra("title", title)
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            it.startActivity(i)
+        }
+    }
+
+    private fun displayNotConfiguredDialog() {
+        context.let {
+            UIRunnable {
+                OKDialog.show(it, resourceHelper.gs(R.string.omnipod_warning),
+                    resourceHelper.gs(R.string.omnipod_error_operation_not_possible_no_configuration), null)
+            }.run()
+        }
+    }
 }

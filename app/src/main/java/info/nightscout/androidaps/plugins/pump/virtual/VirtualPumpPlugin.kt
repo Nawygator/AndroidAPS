@@ -1,6 +1,8 @@
 package info.nightscout.androidaps.plugins.pump.virtual
 
 import android.os.SystemClock
+import androidx.preference.PreferenceFragmentCompat
+import androidx.preference.SwitchPreference
 import dagger.android.HasAndroidInjector
 import info.nightscout.androidaps.Config
 import info.nightscout.androidaps.R
@@ -16,7 +18,6 @@ import info.nightscout.androidaps.logging.AAPSLogger
 import info.nightscout.androidaps.logging.LTag
 import info.nightscout.androidaps.plugins.bus.RxBusWrapper
 import info.nightscout.androidaps.plugins.common.ManufacturerType
-import info.nightscout.androidaps.interfaces.ProfileFunction
 import info.nightscout.androidaps.plugins.general.actions.defs.CustomAction
 import info.nightscout.androidaps.plugins.general.actions.defs.CustomActionType
 import info.nightscout.androidaps.plugins.general.overview.events.EventNewNotification
@@ -25,15 +26,16 @@ import info.nightscout.androidaps.plugins.general.overview.notifications.Notific
 import info.nightscout.androidaps.plugins.pump.common.defs.PumpType
 import info.nightscout.androidaps.plugins.pump.virtual.events.EventVirtualPumpUpdateGui
 import info.nightscout.androidaps.plugins.treatments.TreatmentsPlugin
+import info.nightscout.androidaps.queue.commands.CustomCommand
 import info.nightscout.androidaps.utils.DateUtil
 import info.nightscout.androidaps.utils.FabricPrivacy
 import info.nightscout.androidaps.utils.InstanceId.instanceId
 import info.nightscout.androidaps.utils.TimeChangeType
 import info.nightscout.androidaps.utils.extensions.plusAssign
 import info.nightscout.androidaps.utils.resources.ResourceHelper
+import info.nightscout.androidaps.utils.rx.AapsSchedulers
 import info.nightscout.androidaps.utils.sharedPreferences.SP
 import io.reactivex.disposables.CompositeDisposable
-import io.reactivex.schedulers.Schedulers
 import org.json.JSONException
 import org.json.JSONObject
 import javax.inject.Inject
@@ -47,6 +49,7 @@ class VirtualPumpPlugin @Inject constructor(
     private val rxBus: RxBusWrapper,
     private var fabricPrivacy: FabricPrivacy,
     resourceHelper: ResourceHelper,
+    private val aapsSchedulers: AapsSchedulers,
     private val sp: SP,
     private val profileFunction: ProfileFunction,
     private val treatmentsPlugin: TreatmentsPlugin,
@@ -56,15 +59,14 @@ class VirtualPumpPlugin @Inject constructor(
 ) : PumpPluginBase(PluginDescription()
     .mainType(PluginType.PUMP)
     .fragmentClass(VirtualPumpFragment::class.java.name)
+    .pluginIcon(R.drawable.ic_virtual_pump)
     .pluginName(R.string.virtualpump)
     .shortName(R.string.virtualpump_shortname)
     .preferencesId(R.xml.pref_virtualpump)
-    .neverVisible(config.NSCLIENT)
     .description(R.string.description_pump_virtual)
     .setDefault(),
     injector, aapsLogger, resourceHelper, commandQueue
 ), PumpInterface {
-
 
     private val disposable = CompositeDisposable()
     var batteryPercent = 50
@@ -110,14 +112,21 @@ class VirtualPumpPlugin @Inject constructor(
         super.onStart()
         disposable += rxBus
             .toObservable(EventPreferenceChange::class.java)
-            .observeOn(Schedulers.io())
-            .subscribe({ event: EventPreferenceChange -> if (event.isChanged(resourceHelper, R.string.key_virtualpump_type)) refreshConfiguration() }) { fabricPrivacy.logException(it) }
+            .observeOn(aapsSchedulers.io)
+            .subscribe({ event: EventPreferenceChange -> if (event.isChanged(resourceHelper, R.string.key_virtualpump_type)) refreshConfiguration() }, fabricPrivacy::logException)
         refreshConfiguration()
     }
 
     override fun onStop() {
         disposable.clear()
         super.onStop()
+    }
+
+    override fun preprocessPreferences(preferenceFragment: PreferenceFragmentCompat) {
+        super.preprocessPreferences(preferenceFragment)
+        val uploadStatus = preferenceFragment.findPreference(resourceHelper.gs(R.string.key_virtualpump_uploadstatus)) as SwitchPreference?
+            ?: return
+        uploadStatus.isVisible = !config.NSCLIENT
     }
 
     override fun isFakingTempsByExtendedBoluses(): Boolean {
@@ -133,6 +142,11 @@ class VirtualPumpPlugin @Inject constructor(
     }
 
     override fun executeCustomAction(customActionType: CustomActionType) {}
+
+    override fun executeCustomCommand(customCommand: CustomCommand?): PumpEnactResult? {
+        return null
+    }
+
     override fun isInitialized(): Boolean {
         return true
     }
@@ -165,7 +179,7 @@ class VirtualPumpPlugin @Inject constructor(
 
     override fun disconnect(reason: String) {}
     override fun stopConnecting() {}
-    override fun getPumpStatus() {
+    override fun getPumpStatus(reason: String?) {
         lastDataTime = System.currentTimeMillis()
     }
 
@@ -327,7 +341,7 @@ class VirtualPumpPlugin @Inject constructor(
 
     override fun getJSONStatus(profile: Profile, profileName: String, version: String): JSONObject {
         val now = System.currentTimeMillis()
-        if (!sp.getBoolean("virtualpump_uploadstatus", false)) {
+        if (!sp.getBoolean(R.string.key_virtualpump_uploadstatus, false)) {
             return JSONObject()
         }
         val pump = JSONObject()
@@ -391,7 +405,7 @@ class VirtualPumpPlugin @Inject constructor(
     }
 
     fun refreshConfiguration() {
-        val pumptype = sp.getString(R.string.key_virtualpump_type, "Generic AAPS")
+        val pumptype = sp.getString(R.string.key_virtualpump_type, PumpType.GenericAAPS.description)
         val pumpTypeNew = PumpType.getByDescription(pumptype)
         aapsLogger.debug(LTag.PUMP, "Pump in configuration: $pumptype, PumpType object: $pumpTypeNew")
         if (pumpType == pumpTypeNew) return

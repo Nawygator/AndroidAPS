@@ -20,25 +20,24 @@ import info.nightscout.androidaps.events.EventProfileNeedsUpdate
 import info.nightscout.androidaps.interfaces.ActivePluginProvider
 import info.nightscout.androidaps.interfaces.CommandQueueProvider
 import info.nightscout.androidaps.interfaces.Constraint
+import info.nightscout.androidaps.interfaces.ProfileFunction
 import info.nightscout.androidaps.logging.AAPSLogger
 import info.nightscout.androidaps.logging.LTag
 import info.nightscout.androidaps.plugins.bus.RxBusWrapper
 import info.nightscout.androidaps.plugins.configBuilder.ConstraintChecker
-import info.nightscout.androidaps.interfaces.ProfileFunction
 import info.nightscout.androidaps.plugins.general.overview.events.EventDismissBolusProgressIfRunning
 import info.nightscout.androidaps.plugins.general.overview.events.EventDismissNotification
 import info.nightscout.androidaps.plugins.general.overview.events.EventNewNotification
 import info.nightscout.androidaps.plugins.general.overview.notifications.Notification
-import info.nightscout.androidaps.queue.commands.Command
 import info.nightscout.androidaps.queue.commands.*
 import info.nightscout.androidaps.queue.commands.Command.CommandType
 import info.nightscout.androidaps.utils.FabricPrivacy
 import info.nightscout.androidaps.utils.HtmlHelper
 import info.nightscout.androidaps.utils.buildHelper.BuildHelper
 import info.nightscout.androidaps.utils.resources.ResourceHelper
+import info.nightscout.androidaps.utils.rx.AapsSchedulers
 import info.nightscout.androidaps.utils.sharedPreferences.SP
 import io.reactivex.disposables.CompositeDisposable
-import io.reactivex.schedulers.Schedulers
 import java.util.*
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -87,16 +86,17 @@ import javax.inject.Singleton
 @Singleton
 class CommandQueue @Inject constructor(
     private val injector: HasAndroidInjector,
-    val aapsLogger: AAPSLogger,
-    val rxBus: RxBusWrapper,
-    val resourceHelper: ResourceHelper,
-    val constraintChecker: ConstraintChecker,
-    val profileFunction: ProfileFunction,
-    val activePlugin: Lazy<ActivePluginProvider>,
-    val context: Context,
-    val sp: SP,
+    private val aapsLogger: AAPSLogger,
+    private val rxBus: RxBusWrapper,
+    private val aapsSchedulers: AapsSchedulers,
+    private val resourceHelper: ResourceHelper,
+    private val constraintChecker: ConstraintChecker,
+    private val profileFunction: ProfileFunction,
+    private val activePlugin: Lazy<ActivePluginProvider>,
+    private val context: Context,
+    private val sp: SP,
     private val buildHelper: BuildHelper,
-    val fabricPrivacy: FabricPrivacy
+    private val fabricPrivacy: FabricPrivacy
 ) : CommandQueueProvider {
 
     private val disposable = CompositeDisposable()
@@ -109,7 +109,7 @@ class CommandQueue @Inject constructor(
     init {
         disposable.add(rxBus
             .toObservable(EventProfileNeedsUpdate::class.java)
-            .observeOn(Schedulers.io())
+            .observeOn(aapsSchedulers.io)
             .subscribe({
                 aapsLogger.debug(LTag.PROFILE, "onProfileSwitch")
                 profileFunction.getProfile()?.let {
@@ -127,7 +127,7 @@ class CommandQueue @Inject constructor(
                         }
                     })
                 }
-            }) { exception: Throwable -> fabricPrivacy.logException(exception) }
+            }, fabricPrivacy::logException)
         )
 
     }
@@ -208,7 +208,7 @@ class CommandQueue @Inject constructor(
 
     override fun independentConnect(reason: String, callback: Callback?) {
         aapsLogger.debug(LTag.PUMPQUEUE, "Starting new queue")
-        val tempCommandQueue = CommandQueue(injector, aapsLogger, rxBus, resourceHelper, constraintChecker, profileFunction, activePlugin, context, sp, buildHelper, fabricPrivacy)
+        val tempCommandQueue = CommandQueue(injector, aapsLogger, rxBus, aapsSchedulers, resourceHelper, constraintChecker, profileFunction, activePlugin, context, sp, buildHelper, fabricPrivacy)
         tempCommandQueue.readStatus(reason, callback)
     }
 
@@ -260,7 +260,7 @@ class CommandQueue @Inject constructor(
         } else {
             add(CommandBolus(injector, detailedBolusInfo, callback, type))
             if (type == CommandType.BOLUS) { // Bring up bolus progress dialog (start here, so the dialog is shown when the bolus is requested,
-// not when the Bolus command is starting. The command closes the dialog upon completion).
+                // not when the Bolus command is starting. The command closes the dialog upon completion).
                 showBolusProgressDialog(detailedBolusInfo.insulin, detailedBolusInfo.context)
                 // Notify Wear about upcoming bolus
                 rxBus.send(EventBolusRequested(detailedBolusInfo.insulin))
@@ -292,7 +292,7 @@ class CommandQueue @Inject constructor(
         }
         removeAll(CommandType.BOLUS)
         removeAll(CommandType.SMB_BOLUS)
-        Thread(Runnable { activePlugin.get().activePump.stopBolusDelivering() }).run()
+        Thread { activePlugin.get().activePump.stopBolusDelivering() }.run()
     }
 
     // returns true if command is queued
@@ -483,6 +483,55 @@ class CommandQueue @Inject constructor(
         add(CommandLoadEvents(injector, callback))
         notifyAboutNewCommand()
         return true
+    }
+
+    override fun customCommand(customCommand: CustomCommand, callback: Callback?): Boolean {
+        if (isCustomCommandInQueue(customCommand.javaClass)) {
+            callback?.result(executingNowError())?.run()
+            return false
+        }
+        // remove all unfinished
+        removeAllCustomCommands(customCommand.javaClass)
+        // add new command to queue
+        add(CommandCustomCommand(injector, customCommand, callback))
+        notifyAboutNewCommand()
+        return true
+    }
+
+    @Synchronized
+    override fun isCustomCommandInQueue(customCommandType: Class<out CustomCommand>): Boolean {
+        if (isCustomCommandRunning(customCommandType)) {
+            return true
+        }
+        synchronized(queue) {
+            for (i in queue.indices) {
+                val command = queue[i]
+                if (command is CommandCustomCommand && customCommandType.isInstance(command.customCommand)) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    override fun isCustomCommandRunning(customCommandType: Class<out CustomCommand>): Boolean {
+        val performing = this.performing
+        if (performing is CommandCustomCommand && customCommandType.isInstance(performing.customCommand)) {
+            return true
+        }
+        return false
+    }
+
+    @Synchronized
+    private fun removeAllCustomCommands(targetType: Class<out CustomCommand>) {
+        synchronized(queue) {
+            for (i in queue.indices.reversed()) {
+                val command = queue[i]
+                if (command is CustomCommand && targetType.isInstance(command.commandType)) {
+                    queue.removeAt(i)
+                }
+            }
+        }
     }
 
     override fun spannedStatus(): Spanned {

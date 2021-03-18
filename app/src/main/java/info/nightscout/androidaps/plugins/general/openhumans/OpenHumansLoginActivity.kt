@@ -1,6 +1,5 @@
 package info.nightscout.androidaps.plugins.general.openhumans
 
-import android.app.Activity
 import android.app.Dialog
 import android.content.Intent
 import android.net.Uri
@@ -11,11 +10,12 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.fragment.app.DialogFragment
+import androidx.fragment.app.FragmentActivity
 import dagger.android.support.DaggerDialogFragment
 import info.nightscout.androidaps.R
 import info.nightscout.androidaps.activities.NoSplashAppCompatActivity
+import info.nightscout.androidaps.utils.rx.AapsSchedulers
 import io.reactivex.disposables.Disposable
-import io.reactivex.schedulers.Schedulers
 import javax.inject.Inject
 
 class OpenHumansLoginActivity : NoSplashAppCompatActivity() {
@@ -26,7 +26,7 @@ class OpenHumansLoginActivity : NoSplashAppCompatActivity() {
         val button = findViewById<Button>(R.id.button)
         val checkbox = findViewById<CheckBox>(R.id.checkbox)
 
-        button.setOnClickListener { _ ->
+        button.setOnClickListener {
             if (checkbox.isChecked) {
                 CustomTabsIntent.Builder().build().launchUrl(this, Uri.parse(OpenHumansUploader.AUTH_URL))
             } else {
@@ -45,8 +45,8 @@ class OpenHumansLoginActivity : NoSplashAppCompatActivity() {
 
     class ExchangeAuthTokenDialog : DaggerDialogFragment() {
 
-        @Inject
-        lateinit var openHumansUploader: OpenHumansUploader
+        @Inject lateinit var openHumansUploader: OpenHumansUploader
+        @Inject lateinit var aapsSchedulers: AapsSchedulers
 
         private var disposable: Disposable? = null
 
@@ -55,7 +55,7 @@ class OpenHumansLoginActivity : NoSplashAppCompatActivity() {
         }
 
         override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
-            return AlertDialog.Builder(activity!!)
+            return AlertDialog.Builder(requireActivity())
                 .setTitle(R.string.completing_login)
                 .setMessage(R.string.please_wait)
                 .create()
@@ -63,12 +63,12 @@ class OpenHumansLoginActivity : NoSplashAppCompatActivity() {
 
         override fun onCreate(savedInstanceState: Bundle?) {
             super.onCreate(savedInstanceState)
-            disposable = openHumansUploader.login(arguments?.getString("authToken")!!).subscribeOn(Schedulers.io()).subscribe({
+            disposable = openHumansUploader.login(arguments?.getString("authToken")!!).subscribeOn(aapsSchedulers.io).subscribe({
                 dismiss()
-                SetupDoneDialog().show(fragmentManager!!, "SetupDoneDialog")
+                SetupDoneDialog().show(parentFragmentManager, "SetupDoneDialog")
             }, {
                 dismiss()
-                ErrorDialog(it.message).show(fragmentManager!!, "ErrorDialog")
+                ErrorDialog(it.message).show(parentFragmentManager, "ErrorDialog")
             })
         }
 
@@ -96,7 +96,7 @@ class OpenHumansLoginActivity : NoSplashAppCompatActivity() {
             val message = arguments?.getString("message")
             val shownMessage = if (message == null) getString(R.string.there_was_an_error)
             else "${getString(R.string.there_was_an_error)}\n\n$message"
-            return AlertDialog.Builder(activity!!)
+            return AlertDialog.Builder(requireActivity())
                 .setTitle(R.string.error)
                 .setMessage(shownMessage)
                 .setPositiveButton(R.string.close, null)
@@ -122,14 +122,14 @@ class OpenHumansLoginActivity : NoSplashAppCompatActivity() {
         }
 
         override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
-            return AlertDialog.Builder(activity!!)
+            return AlertDialog.Builder(requireActivity())
                 .setTitle(R.string.successfully_logged_in)
                 .setMessage(R.string.setup_will_continue_in_background)
                 .setCancelable(false)
                 .setPositiveButton(R.string.close) { _, _ ->
-                    activity!!.run {
-                        setResult(Activity.RESULT_OK)
-                        activity!!.finish()
+                    requireActivity().run {
+                        setResult(FragmentActivity.RESULT_OK)
+                        requireActivity().finish()
                     }
                 }
                 .create()

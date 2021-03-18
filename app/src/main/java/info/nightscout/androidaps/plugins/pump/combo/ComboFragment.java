@@ -1,7 +1,6 @@
 package info.nightscout.androidaps.plugins.pump.combo;
 
 
-import android.app.Activity;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
@@ -12,6 +11,7 @@ import android.widget.Button;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.fragment.app.FragmentActivity;
 
 import javax.inject.Inject;
 
@@ -27,8 +27,8 @@ import info.nightscout.androidaps.queue.events.EventQueueChanged;
 import info.nightscout.androidaps.utils.DateUtil;
 import info.nightscout.androidaps.utils.FabricPrivacy;
 import info.nightscout.androidaps.utils.resources.ResourceHelper;
+import info.nightscout.androidaps.utils.rx.AapsSchedulers;
 import info.nightscout.androidaps.utils.sharedPreferences.SP;
-import io.reactivex.android.schedulers.AndroidSchedulers;
 import io.reactivex.disposables.CompositeDisposable;
 
 public class ComboFragment extends DaggerFragment implements View.OnClickListener {
@@ -38,8 +38,9 @@ public class ComboFragment extends DaggerFragment implements View.OnClickListene
     @Inject RxBusWrapper rxBus;
     @Inject SP sp;
     @Inject FabricPrivacy fabricPrivacy;
+    @Inject AapsSchedulers aapsSchedulers;
 
-    private CompositeDisposable disposable = new CompositeDisposable();
+    private final CompositeDisposable disposable = new CompositeDisposable();
 
     private TextView stateView;
     private TextView activityView;
@@ -80,12 +81,12 @@ public class ComboFragment extends DaggerFragment implements View.OnClickListene
         super.onResume();
         disposable.add(rxBus
                 .toObservable(EventComboPumpUpdateGUI.class)
-                .observeOn(AndroidSchedulers.mainThread())
+                .observeOn(aapsSchedulers.getMain())
                 .subscribe(event -> updateGui(), fabricPrivacy::logException)
         );
         disposable.add(rxBus
                 .toObservable(EventQueueChanged.class)
-                .observeOn(AndroidSchedulers.mainThread())
+                .observeOn(aapsSchedulers.getMain())
                 .subscribe(event -> updateGui(), fabricPrivacy::logException)
         );
         updateGui();
@@ -98,7 +99,7 @@ public class ComboFragment extends DaggerFragment implements View.OnClickListene
     }
 
     private void runOnUiThread(Runnable action) {
-        Activity activity = getActivity();
+        FragmentActivity activity = getActivity();
         if (activity != null) {
             activity.runOnUiThread(action);
         }

@@ -31,11 +31,12 @@ import info.nightscout.androidaps.plugins.general.overview.events.EventNewNotifi
 import info.nightscout.androidaps.plugins.general.overview.notifications.Notification
 import info.nightscout.androidaps.plugins.pump.common.bolusInfo.DetailedBolusInfoStorage
 import info.nightscout.androidaps.plugins.pump.common.defs.PumpType
+import info.nightscout.androidaps.queue.commands.CustomCommand
 import info.nightscout.androidaps.utils.*
 import info.nightscout.androidaps.utils.resources.ResourceHelper
+import info.nightscout.androidaps.utils.rx.AapsSchedulers
 import info.nightscout.androidaps.utils.sharedPreferences.SP
 import io.reactivex.disposables.CompositeDisposable
-import io.reactivex.schedulers.Schedulers
 import org.json.JSONException
 import org.json.JSONObject
 import javax.inject.Inject
@@ -47,6 +48,7 @@ import kotlin.math.max
 class DanaRSPlugin @Inject constructor(
     injector: HasAndroidInjector,
     aapsLogger: AAPSLogger,
+    private val aapsSchedulers: AapsSchedulers,
     private val rxBus: RxBusWrapper,
     private val context: Context,
     resourceHelper: ResourceHelper,
@@ -62,6 +64,7 @@ class DanaRSPlugin @Inject constructor(
 ) : PumpPluginBase(PluginDescription()
     .mainType(PluginType.PUMP)
     .fragmentClass(info.nightscout.androidaps.dana.DanaFragment::class.java.name)
+    .pluginIcon(R.drawable.ic_danars_128)
     .pluginName(R.string.danarspump)
     .shortName(R.string.danarspump_shortname)
     .preferencesId(R.xml.pref_danars)
@@ -91,18 +94,18 @@ class DanaRSPlugin @Inject constructor(
         context.bindService(intent, mConnection, Context.BIND_AUTO_CREATE)
         disposable.add(rxBus
             .toObservable(EventAppExit::class.java)
-            .observeOn(Schedulers.io())
-            .subscribe({ context.unbindService(mConnection) }) { fabricPrivacy.logException(it) }
+            .observeOn(aapsSchedulers.io)
+            .subscribe({ context.unbindService(mConnection) }, fabricPrivacy::logException)
         )
         disposable.add(rxBus
             .toObservable(EventConfigBuilderChange::class.java)
-            .observeOn(Schedulers.io())
+            .observeOn(aapsSchedulers.io)
             .subscribe { danaPump.reset() }
         )
         disposable.add(rxBus
             .toObservable(EventDanaRSDeviceChange::class.java)
-            .observeOn(Schedulers.io())
-            .subscribe({ changePump() }) { fabricPrivacy.logException(it) }
+            .observeOn(aapsSchedulers.io)
+            .subscribe({ changePump() }, fabricPrivacy::logException)
         )
         changePump() // load device name
     }
@@ -163,7 +166,7 @@ class DanaRSPlugin @Inject constructor(
         danaRSService?.stopConnecting()
     }
 
-    override fun getPumpStatus() {
+    override fun getPumpStatus(reason: String?) {
         danaRSService?.readPumpStatus()
         pumpDesc.basalStep = danaPump.basalStep
         pumpDesc.bolusStep = danaPump.bolusStep
@@ -209,7 +212,7 @@ class DanaRSPlugin @Inject constructor(
     }
 
     override fun isSuspended(): Boolean {
-        return danaPump.pumpSuspended
+        return danaPump.pumpSuspended || danaPump.errorState != DanaPump.ErrorState.NONE
     }
 
     override fun isBusy(): Boolean {
@@ -658,6 +661,7 @@ class DanaRSPlugin @Inject constructor(
     override fun loadTDDs(): PumpEnactResult = loadHistory(info.nightscout.androidaps.dana.comm.RecordTypes.RECORD_TYPE_DAILY)
     override fun getCustomActions(): List<CustomAction>? = null
     override fun executeCustomAction(customActionType: CustomActionType) {}
+    override fun executeCustomCommand(customCommand: CustomCommand?): PumpEnactResult? = null
     override fun canHandleDST(): Boolean = false
     override fun timezoneOrDSTChanged(timeChangeType: TimeChangeType?) {}
     override fun clearPairing() {
