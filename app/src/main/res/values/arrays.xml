@@ -77,24 +77,14 @@
         <item>@string/teenage</item>
         <item>@string/adult</item>
         <item>@string/resistantadult</item>
+        <item>@string/pregnant</item>
     </string-array>
     <string-array name="ageValues" translatable="false">
         <item>@string/key_child</item>
         <item>@string/key_teenage</item>
         <item>@string/key_adult</item>
         <item>@string/key_resistantadult</item>
-    </string-array>
-
-    <string-array name="quickWizardYesNo">
-        <item>@string/yes</item>
-        <item>@string/no</item>
-    </string-array>
-
-    <string-array name="quickWizardYesNoPosNeg">
-        <item>@string/yes</item>
-        <item>@string/no</item>
-        <item>@string/positiveonly</item>
-        <item>@string/negativeonly</item>
+        <item>@string/key_pregnant</item>
     </string-array>
 
     <string-array name="location">
@@ -132,6 +122,7 @@
         <item>Tandem t:flex</item>
         <item>Tandem t:slim G4</item>
         <item>Tandem t:slim X2</item>
+        <item>YpsoPump</item>
     </string-array>
 
     <string-array name="medtronicPumpTypeArray">
